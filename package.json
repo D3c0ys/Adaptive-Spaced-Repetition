@@ -1,0 +1,18 @@
+{
+  "name": "adaptive-spaced-repetition",
+  "version": "1.0.0",
+  "description": "Adaptive forgetting-curve spaced repetition scheduler for Obsidian notes.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "latest",
+    "typescript": "^5.4.0"
+  }
+}
