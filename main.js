@@ -341,6 +341,21 @@ class AdaptiveSRPlugin extends obsidian.Plugin {
       },
     });
 
+    this.registerMarkdownCodeBlockProcessor("asr-due", (source, el) => {
+      el.addClass("asr-due-embed");
+      var header = el.createDiv({ cls: "asr-due-embed-header" });
+      header.createSpan({ text: "Due for review", cls: "asr-due-embed-title" });
+      var refreshBtn = header.createEl("button", {
+        text: "↻",
+        cls: "asr-due-embed-refresh",
+        attr: { "aria-label": "Refresh" },
+      });
+      var body = el.createDiv();
+      var doRender = () => renderDueList(body, this, {});
+      refreshBtn.onclick = doRender;
+      doRender();
+    });
+
     this.addSettingTab(new ASRSettingTab(this.app, this));
   }
 
@@ -511,7 +526,52 @@ class GraphModal extends obsidian.Modal {
   }
 }
 
-// ---------- due notes list ----------
+// ---------- due notes list (shared by the modal and the `asr-due` embed) ----------
+
+function renderDueList(containerEl, plugin, options) {
+  options = options || {};
+  containerEl.empty();
+
+  var due = plugin.getDueNotes();
+
+  if (due.length === 0) {
+    containerEl.createEl("p", { text: "Nothing due right now.", cls: "asr-due-empty" });
+    return;
+  }
+
+  var list = containerEl.createDiv({ cls: "asr-due-list" });
+
+  due.forEach((entry) => {
+    var row = list.createDiv({ cls: "asr-due-row" });
+
+    var info = row.createDiv({ cls: "asr-due-info" });
+    var link = info.createEl("a", { text: entry.file.basename, cls: "asr-due-title" });
+    link.onclick = (e) => {
+      e.preventDefault();
+      plugin.app.workspace.getLeaf(false).openFile(entry.file);
+      if (options.onOpenNote) options.onOpenNote();
+    };
+    var overdueLabel = entry.daysOverdue > 0 ? entry.daysOverdue + "d overdue" : "due today";
+    info.createEl("span", {
+      text: " — θ=" + entry.theta.toFixed(4) + " — " + overdueLabel,
+      cls: "asr-due-meta",
+    });
+
+    var actions = row.createDiv({ cls: "asr-due-actions" });
+    var passBtn = actions.createEl("button", { text: "Pass", cls: "mod-cta" });
+    passBtn.onclick = async () => {
+      var nextReview = await plugin.gradeNote(entry.file, "pass");
+      new obsidian.Notice('"' + entry.file.basename + '" passed. Next review: ' + nextReview + ".");
+      renderDueList(containerEl, plugin, options);
+    };
+    var failBtn = actions.createEl("button", { text: "Fail" });
+    failBtn.onclick = async () => {
+      var nextReview = await plugin.gradeNote(entry.file, "fail");
+      new obsidian.Notice('"' + entry.file.basename + '" failed. Next review: ' + nextReview + ".");
+      renderDueList(containerEl, plugin, options);
+    };
+  });
+}
 
 class DueNotesModal extends obsidian.Modal {
   constructor(app, plugin) {
@@ -520,53 +580,10 @@ class DueNotesModal extends obsidian.Modal {
   }
 
   onOpen() {
-    this.render();
-  }
-
-  render() {
     var contentEl = this.contentEl;
-    contentEl.empty();
     contentEl.createEl("h2", { text: "Due for review" });
-
-    var due = this.plugin.getDueNotes();
-
-    if (due.length === 0) {
-      contentEl.createEl("p", { text: "Nothing due right now." });
-      return;
-    }
-
-    var list = contentEl.createDiv({ cls: "asr-due-list" });
-
-    due.forEach((entry) => {
-      var row = list.createDiv({ cls: "asr-due-row" });
-
-      var info = row.createDiv({ cls: "asr-due-info" });
-      var link = info.createEl("a", { text: entry.file.basename, cls: "asr-due-title" });
-      link.onclick = (e) => {
-        e.preventDefault();
-        this.app.workspace.getLeaf(false).openFile(entry.file);
-        this.close();
-      };
-      var overdueLabel = entry.daysOverdue > 0 ? entry.daysOverdue + "d overdue" : "due today";
-      info.createEl("span", {
-        text: " — θ=" + entry.theta.toFixed(4) + " — " + overdueLabel,
-        cls: "asr-due-meta",
-      });
-
-      var actions = row.createDiv({ cls: "asr-due-actions" });
-      var passBtn = actions.createEl("button", { text: "Pass", cls: "mod-cta" });
-      passBtn.onclick = async () => {
-        var nextReview = await this.plugin.gradeNote(entry.file, "pass");
-        new obsidian.Notice('"' + entry.file.basename + '" passed. Next review: ' + nextReview + ".");
-        this.render();
-      };
-      var failBtn = actions.createEl("button", { text: "Fail" });
-      failBtn.onclick = async () => {
-        var nextReview = await this.plugin.gradeNote(entry.file, "fail");
-        new obsidian.Notice('"' + entry.file.basename + '" failed. Next review: ' + nextReview + ".");
-        this.render();
-      };
-    });
+    var body = contentEl.createDiv();
+    renderDueList(body, this.plugin, { onOpenNote: () => this.close() });
   }
 
   onClose() {

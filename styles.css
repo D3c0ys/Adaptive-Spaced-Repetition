@@ -72,3 +72,36 @@
 .asr-legend-fail {
   color: var(--text-error);
 }
+
+.asr-due-embed {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  background: var(--background-primary-alt, var(--background-secondary));
+}
+
+.asr-due-embed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.asr-due-embed-title {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.asr-due-embed-refresh {
+  padding: 0 6px;
+  line-height: 1.4;
+}
+
+.asr-due-empty {
+  color: var(--text-muted);
+  margin: 4px 0;
+}

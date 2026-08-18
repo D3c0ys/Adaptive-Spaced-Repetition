@@ -382,6 +382,21 @@ export default class AdaptiveSRPlugin extends Plugin {
       },
     });
 
+    this.registerMarkdownCodeBlockProcessor("asr-due", (source, el) => {
+      el.addClass("asr-due-embed");
+      const header = el.createDiv({ cls: "asr-due-embed-header" });
+      header.createSpan({ text: "Due for review", cls: "asr-due-embed-title" });
+      const refreshBtn = header.createEl("button", {
+        text: "↻",
+        cls: "asr-due-embed-refresh",
+        attr: { "aria-label": "Refresh" },
+      });
+      const body = el.createDiv();
+      const doRender = () => renderDueList(body, this, {});
+      refreshBtn.onclick = doRender;
+      doRender();
+    });
+
     this.addSettingTab(new ASRSettingTab(this.app, this));
   }
 
@@ -559,7 +574,55 @@ class GraphModal extends Modal {
   }
 }
 
-// ---------- due notes list ----------
+// ---------- due notes list (shared by the modal and the `asr-due` embed) ----------
+
+interface DueListOptions {
+  onOpenNote?: () => void;
+}
+
+function renderDueList(containerEl: HTMLElement, plugin: AdaptiveSRPlugin, options: DueListOptions) {
+  containerEl.empty();
+
+  const due = plugin.getDueNotes();
+
+  if (due.length === 0) {
+    containerEl.createEl("p", { text: "Nothing due right now.", cls: "asr-due-empty" });
+    return;
+  }
+
+  const list = containerEl.createDiv({ cls: "asr-due-list" });
+
+  for (const entry of due) {
+    const row = list.createDiv({ cls: "asr-due-row" });
+
+    const info = row.createDiv({ cls: "asr-due-info" });
+    const link = info.createEl("a", { text: entry.file.basename, cls: "asr-due-title" });
+    link.onclick = (e) => {
+      e.preventDefault();
+      plugin.app.workspace.getLeaf(false).openFile(entry.file);
+      options.onOpenNote?.();
+    };
+    const overdueLabel = entry.daysOverdue > 0 ? `${entry.daysOverdue}d overdue` : "due today";
+    info.createEl("span", {
+      text: ` — θ=${entry.theta.toFixed(4)} — ${overdueLabel}`,
+      cls: "asr-due-meta",
+    });
+
+    const actions = row.createDiv({ cls: "asr-due-actions" });
+    const passBtn = actions.createEl("button", { text: "Pass", cls: "mod-cta" });
+    passBtn.onclick = async () => {
+      const nextReview = await plugin.gradeNote(entry.file, "pass");
+      new Notice(`"${entry.file.basename}" passed. Next review: ${nextReview}.`);
+      renderDueList(containerEl, plugin, options);
+    };
+    const failBtn = actions.createEl("button", { text: "Fail" });
+    failBtn.onclick = async () => {
+      const nextReview = await plugin.gradeNote(entry.file, "fail");
+      new Notice(`"${entry.file.basename}" failed. Next review: ${nextReview}.`);
+      renderDueList(containerEl, plugin, options);
+    };
+  }
+}
 
 class DueNotesModal extends Modal {
   plugin: AdaptiveSRPlugin;
@@ -570,53 +633,10 @@ class DueNotesModal extends Modal {
   }
 
   onOpen() {
-    this.render();
-  }
-
-  render() {
     const { contentEl } = this;
-    contentEl.empty();
     contentEl.createEl("h2", { text: "Due for review" });
-
-    const due = this.plugin.getDueNotes();
-
-    if (due.length === 0) {
-      contentEl.createEl("p", { text: "Nothing due right now." });
-      return;
-    }
-
-    const list = contentEl.createDiv({ cls: "asr-due-list" });
-
-    for (const entry of due) {
-      const row = list.createDiv({ cls: "asr-due-row" });
-
-      const info = row.createDiv({ cls: "asr-due-info" });
-      const link = info.createEl("a", { text: entry.file.basename, cls: "asr-due-title" });
-      link.onclick = (e) => {
-        e.preventDefault();
-        this.app.workspace.getLeaf(false).openFile(entry.file);
-        this.close();
-      };
-      const overdueLabel = entry.daysOverdue > 0 ? `${entry.daysOverdue}d overdue` : "due today";
-      info.createEl("span", {
-        text: ` — θ=${entry.theta.toFixed(4)} — ${overdueLabel}`,
-        cls: "asr-due-meta",
-      });
-
-      const actions = row.createDiv({ cls: "asr-due-actions" });
-      const passBtn = actions.createEl("button", { text: "Pass", cls: "mod-cta" });
-      passBtn.onclick = async () => {
-        const nextReview = await this.plugin.gradeNote(entry.file, "pass");
-        new Notice(`"${entry.file.basename}" passed. Next review: ${nextReview}.`);
-        this.render();
-      };
-      const failBtn = actions.createEl("button", { text: "Fail" });
-      failBtn.onclick = async () => {
-        const nextReview = await this.plugin.gradeNote(entry.file, "fail");
-        new Notice(`"${entry.file.basename}" failed. Next review: ${nextReview}.`);
-        this.render();
-      };
-    }
+    const body = contentEl.createDiv();
+    renderDueList(body, this.plugin, { onOpenNote: () => this.close() });
   }
 
   onClose() {

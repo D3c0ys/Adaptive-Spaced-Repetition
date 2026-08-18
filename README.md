@@ -87,6 +87,23 @@ command name below):
   correctly handles messy real data — e.g. two reviews logged on the same day render as
   jittered side-by-side markers instead of overlapping.
 
+### Embedding the due list in a note
+
+The due-notes list can also be embedded inline in any note's reading view, instead of only
+popping up as a modal — useful for a dashboard/MOC note. Add a fenced code block with the
+`asr-due` language:
+
+````markdown
+```asr-due
+```
+````
+
+It renders the same list, with the same working Pass/Fail buttons and a ↻ refresh button.
+The block re-renders automatically whenever Obsidian re-renders the note (reopening it,
+switching from source to reading view, etc.); use the refresh button to force an update
+without leaving the note — e.g. after the day rolls over, or after grading a note from
+somewhere else in the same session.
+
 ## Installation
 
 Manual install (no build step required — a working `main.js` is committed in this repo):
