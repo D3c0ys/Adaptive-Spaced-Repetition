@@ -2,8 +2,10 @@ import {
   App,
   Modal,
   Notice,
+  Platform,
   Plugin,
   PluginSettingTab,
+  requestUrl,
   Setting,
   TFile,
 } from "obsidian";
@@ -13,6 +15,13 @@ interface ASRSettings {
   threshold: number;
   alpha: number;
   beta: number;
+  googleClientId: string;
+  googleClientSecret: string;
+  googleAutoSync: boolean;
+  googleAccessToken: string;
+  googleRefreshToken: string;
+  googleTokenExpiry: number;
+  googleAccountEmail: string;
 }
 
 const DEFAULT_SETTINGS: ASRSettings = {
@@ -20,6 +29,13 @@ const DEFAULT_SETTINGS: ASRSettings = {
   threshold: 0.9,
   alpha: 0.7,
   beta: 1.6,
+  googleClientId: "",
+  googleClientSecret: "",
+  googleAutoSync: false,
+  googleAccessToken: "",
+  googleRefreshToken: "",
+  googleTokenExpiry: 0,
+  googleAccountEmail: "",
 };
 
 type Outcome = "pass" | "fail";
@@ -109,6 +125,240 @@ function round6(n: number): number {
 function shortDate(s: string): string {
   const parts = s.split("-");
   return `${parts[1]}/${parts[2]}`;
+}
+
+// ---------- Google Calendar quick-add (no API key / OAuth required) ----------
+
+function obsidianUri(app: App, file: TFile): string {
+  const vault = encodeURIComponent(app.vault.getName());
+  const filePath = encodeURIComponent(file.path.replace(/\.md$/, ""));
+  return `obsidian://open?vault=${vault}&file=${filePath}`;
+}
+
+function googleCalendarQuickAddUrl(title: string, dateStr: string, detailsLines: string[]): string {
+  const startCompact = dateStr.replace(/-/g, "");
+  const endDate = parseDate(dateStr);
+  endDate.setDate(endDate.getDate() + 1);
+  const endCompact = isoDate(endDate).replace(/-/g, "");
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: title,
+    dates: `${startCompact}/${endCompact}`,
+    details: detailsLines.join("\n"),
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+// Opens Google Calendar's "add event" page pre-filled for the given note and
+// date, as an all-day event. Nothing is written to the user's calendar until
+// they click Save on that page — no credentials or network calls from here.
+function openGoogleCalendarForNote(app: App, file: TFile, dateStr: string): void {
+  const title = `Review: ${file.basename}`;
+  const details = ["Adaptive Spaced Repetition review.", `Open in Obsidian: ${obsidianUri(app, file)}`];
+  window.open(googleCalendarQuickAddUrl(title, dateStr, details), "_blank");
+}
+
+// ---------- Google Calendar OAuth auto-sync ----------
+// Uses the RFC 8252 "loopback interface" flow: a local, single-use HTTP
+// server on 127.0.0.1 catches the OAuth redirect. Desktop-only (needs
+// Node's `http` module, unavailable on Obsidian mobile) — `require("http")`
+// is deliberately called only inside connectGoogleCalendar(), after the
+// desktop check, so this file never touches Node builtins at module load
+// time (which would crash the plugin on mobile).
+
+const GOOGLE_SCOPES = "openid email https://www.googleapis.com/auth/calendar.events";
+
+async function connectGoogleCalendar(plugin: AdaptiveSRPlugin): Promise<void> {
+  if (!Platform.isDesktopApp) {
+    new Notice("Google Calendar sync requires the Obsidian desktop app.");
+    return;
+  }
+  if (!plugin.settings.googleClientId || !plugin.settings.googleClientSecret) {
+    new Notice("Enter a Google Client ID and Client Secret first.");
+    return;
+  }
+
+  const http: any = require("http");
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const redirectUri = `http://127.0.0.1:${port}/callback`;
+
+  const codePromise = new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("Timed out waiting for Google authorization."));
+    }, 5 * 60 * 1000);
+
+    server.on("request", (req: any, res: any) => {
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      if (url.pathname !== "/callback") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const code = url.searchParams.get("code");
+      const error = url.searchParams.get("error");
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(
+        `<html><body style='font-family:sans-serif;padding:2rem;'><h2>${
+          error ? "Authorization failed" : "Authorization complete"
+        }</h2><p>You can close this tab and return to Obsidian.</p></body></html>`
+      );
+      clearTimeout(timeout);
+      server.close();
+      if (error) reject(new Error(error));
+      else resolve(code!);
+    });
+  });
+
+  const authUrl =
+    "https://accounts.google.com/o/oauth2/v2/auth?" +
+    new URLSearchParams({
+      client_id: plugin.settings.googleClientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: GOOGLE_SCOPES,
+      access_type: "offline",
+      prompt: "consent",
+    }).toString();
+
+  window.open(authUrl, "_blank");
+  new Notice("Continue in your browser to authorize Google Calendar access...");
+
+  let code: string;
+  try {
+    code = await codePromise;
+  } catch (e: any) {
+    new Notice("Google Calendar authorization failed: " + e.message);
+    return;
+  }
+
+  let tokenRes;
+  try {
+    tokenRes = await requestUrl({
+      url: "https://oauth2.googleapis.com/token",
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({
+        code,
+        client_id: plugin.settings.googleClientId,
+        client_secret: plugin.settings.googleClientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      }).toString(),
+    });
+  } catch (e: any) {
+    new Notice("Google token exchange failed: " + e.message);
+    return;
+  }
+
+  const tokens = tokenRes.json;
+  plugin.settings.googleAccessToken = tokens.access_token;
+  plugin.settings.googleRefreshToken = tokens.refresh_token || plugin.settings.googleRefreshToken;
+  plugin.settings.googleTokenExpiry = Date.now() + (tokens.expires_in || 3600) * 1000;
+  await plugin.saveSettings();
+
+  try {
+    const userRes = await requestUrl({
+      url: "https://www.googleapis.com/oauth2/v2/userinfo",
+      headers: { Authorization: "Bearer " + tokens.access_token },
+    });
+    plugin.settings.googleAccountEmail = (userRes.json && userRes.json.email) || "";
+    await plugin.saveSettings();
+  } catch (e) {
+    // non-fatal — connection still works without a display email
+  }
+
+  new Notice(
+    "Google Calendar connected" +
+      (plugin.settings.googleAccountEmail ? " as " + plugin.settings.googleAccountEmail : "") +
+      "."
+  );
+}
+
+function disconnectGoogleCalendar(plugin: AdaptiveSRPlugin): Promise<void> {
+  plugin.settings.googleAccessToken = "";
+  plugin.settings.googleRefreshToken = "";
+  plugin.settings.googleTokenExpiry = 0;
+  plugin.settings.googleAccountEmail = "";
+  return plugin.saveSettings();
+}
+
+async function ensureGoogleAccessToken(plugin: AdaptiveSRPlugin): Promise<string | null> {
+  if (!plugin.settings.googleRefreshToken) return null;
+  if (plugin.settings.googleAccessToken && Date.now() < plugin.settings.googleTokenExpiry - 60000) {
+    return plugin.settings.googleAccessToken;
+  }
+  let res;
+  try {
+    res = await requestUrl({
+      url: "https://oauth2.googleapis.com/token",
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({
+        client_id: plugin.settings.googleClientId,
+        client_secret: plugin.settings.googleClientSecret,
+        refresh_token: plugin.settings.googleRefreshToken,
+        grant_type: "refresh_token",
+      }).toString(),
+    });
+  } catch (e) {
+    console.error("Adaptive SR: Google token refresh failed", e);
+    return null;
+  }
+  const tokens = res.json;
+  plugin.settings.googleAccessToken = tokens.access_token;
+  plugin.settings.googleTokenExpiry = Date.now() + (tokens.expires_in || 3600) * 1000;
+  await plugin.saveSettings();
+  return plugin.settings.googleAccessToken;
+}
+
+// Creates (or, given an existing event id, updates) an all-day Google
+// Calendar event for a note's review date. Returns the event id, or null on
+// failure. A 404 on update (event deleted on Google's side) falls back to
+// creating a fresh event instead of failing silently.
+async function syncNoteToGoogleCalendar(
+  plugin: AdaptiveSRPlugin,
+  file: TFile,
+  dateStr: string,
+  existingEventId: string | null
+): Promise<string | null> {
+  const token = await ensureGoogleAccessToken(plugin);
+  if (!token) return null;
+
+  const body = {
+    summary: `Review: ${file.basename}`,
+    description: `Adaptive Spaced Repetition review.\nOpen in Obsidian: ${obsidianUri(plugin.app, file)}`,
+    start: { date: dateStr },
+    end: { date: addDays(dateStr, 1) },
+  };
+
+  const url =
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events" + (existingEventId ? "/" + existingEventId : "");
+  const method = existingEventId ? "PATCH" : "POST";
+
+  try {
+    const res = await requestUrl({
+      url,
+      method,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+      headers: { Authorization: "Bearer " + token },
+      throw: false,
+    });
+    if (res.status === 404 && existingEventId) {
+      return syncNoteToGoogleCalendar(plugin, file, dateStr, null);
+    }
+    if (res.status >= 200 && res.status < 300) {
+      return res.json.id;
+    }
+    console.error("Adaptive SR: Google Calendar sync failed", res.status, res.text);
+    return null;
+  } catch (e) {
+    console.error("Adaptive SR: Google Calendar sync error", e);
+    return null;
+  }
 }
 
 /**
@@ -382,6 +632,46 @@ export default class AdaptiveSRPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "asr-add-to-calendar",
+      name: "Add note's next review to Google Calendar",
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!this.isTracked(fm)) return false;
+        if (!checking) openGoogleCalendarForNote(this.app, file, coerceDateStr(fm!.next_review)!);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "asr-sync-all-to-calendar",
+      name: "Sync all tracked notes to Google Calendar",
+      callback: async () => {
+        if (!this.settings.googleRefreshToken) {
+          new Notice("Connect Google Calendar in settings first.");
+          return;
+        }
+        const files = this.app.vault.getMarkdownFiles();
+        let synced = 0;
+        for (const file of files) {
+          const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+          if (!this.isTracked(fm)) continue;
+          const nextReview = coerceDateStr(fm!.next_review)!;
+          const oldEventId: string | null = fm!.gcal_event_id || null;
+          const eventId = await syncNoteToGoogleCalendar(this, file, nextReview, oldEventId);
+          if (eventId && eventId !== oldEventId) {
+            await this.app.fileManager.processFrontMatter(file, (data) => {
+              data.gcal_event_id = eventId;
+            });
+          }
+          if (eventId) synced++;
+        }
+        new Notice(`Synced ${synced} note(s) to Google Calendar.`);
+      },
+    });
+
     this.registerMarkdownCodeBlockProcessor("asr-due", (source, el) => {
       el.addClass("asr-due-embed");
       const header = el.createDiv({ cls: "asr-due-embed-header" });
@@ -427,6 +717,7 @@ export default class AdaptiveSRPlugin extends Plugin {
       if (!Array.isArray(data.review_history)) data.review_history = [];
     });
     new Notice(`"${file.basename}" added to the review schedule — due today.`);
+    await this.syncToCalendarIfEnabled(file, today, null);
   }
 
   /**
@@ -437,11 +728,13 @@ export default class AdaptiveSRPlugin extends Plugin {
   async gradeNote(file: TFile, outcome: Outcome): Promise<string> {
     const today = todayStr();
     let nextReview = today;
+    let oldEventId: string | null = null;
     await this.app.fileManager.processFrontMatter(file, (data) => {
       const theta = typeof data.theta === "number" ? data.theta : this.settings.thetaInit;
       const newTheta = round6(updateTheta(theta, outcome, this.settings));
       const gap = gapDays(newTheta, this.settings.threshold);
       nextReview = addDays(today, gap);
+      oldEventId = data.gcal_event_id || null;
 
       data.last_reviewed = today;
       data.theta = newTheta;
@@ -449,7 +742,21 @@ export default class AdaptiveSRPlugin extends Plugin {
       if (!Array.isArray(data.review_history)) data.review_history = [];
       data.review_history.push({ date: today, outcome });
     });
+    await this.syncToCalendarIfEnabled(file, nextReview, oldEventId);
     return nextReview;
+  }
+
+  // Creates/updates the note's Google Calendar event when auto-sync is on
+  // and connected; a no-op otherwise. Never throws — sync failures shouldn't
+  // block grading or scheduling.
+  async syncToCalendarIfEnabled(file: TFile, dateStr: string, existingEventId: string | null): Promise<void> {
+    if (!this.settings.googleAutoSync || !this.settings.googleRefreshToken) return;
+    const eventId = await syncNoteToGoogleCalendar(this, file, dateStr, existingEventId);
+    if (eventId && eventId !== existingEventId) {
+      await this.app.fileManager.processFrontMatter(file, (data) => {
+        data.gcal_event_id = eventId;
+      });
+    }
   }
 
   getDueNotes(): DueEntry[] {
@@ -609,6 +916,12 @@ function renderDueList(containerEl: HTMLElement, plugin: AdaptiveSRPlugin, optio
     });
 
     const actions = row.createDiv({ cls: "asr-due-actions" });
+    const calBtn = actions.createEl("button", {
+      text: "📅",
+      cls: "asr-icon-btn",
+      attr: { "aria-label": "Add to Google Calendar" },
+    });
+    calBtn.onclick = () => openGoogleCalendarForNote(plugin.app, entry.file, entry.nextReview);
     const passBtn = actions.createEl("button", { text: "Pass", cls: "mod-cta" });
     passBtn.onclick = async () => {
       const nextReview = await plugin.gradeNote(entry.file, "pass");
@@ -712,6 +1025,73 @@ class ASRSettingTab extends PluginSettingTab {
             this.plugin.settings.beta = n;
             await this.plugin.saveSettings();
           }
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Google Calendar sync" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Automatically create/update a Google Calendar event whenever a note's next review " +
+        "date changes. Requires a free OAuth Client ID (Desktop app type) from Google Cloud " +
+        "Console — see the README for setup steps.",
+    });
+
+    new Setting(containerEl).setName("Google Client ID").addText((text) =>
+      text.setValue(this.plugin.settings.googleClientId).onChange(async (value) => {
+        this.plugin.settings.googleClientId = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+
+    new Setting(containerEl).setName("Google Client Secret").addText((text) => {
+      text.inputEl.type = "password";
+      text.setValue(this.plugin.settings.googleClientSecret).onChange(async (value) => {
+        this.plugin.settings.googleClientSecret = value.trim();
+        await this.plugin.saveSettings();
+      });
+    });
+
+    const connected = !!this.plugin.settings.googleRefreshToken;
+    const statusSetting = new Setting(containerEl)
+      .setName("Connection")
+      .setDesc(
+        connected
+          ? "Connected" +
+              (this.plugin.settings.googleAccountEmail ? " as " + this.plugin.settings.googleAccountEmail : "") +
+              "."
+          : "Not connected."
+      );
+
+    if (connected) {
+      statusSetting.addButton((btn) =>
+        btn.setButtonText("Disconnect").onClick(async () => {
+          await disconnectGoogleCalendar(this.plugin);
+          this.display();
+        })
+      );
+    } else {
+      statusSetting.addButton((btn) =>
+        btn
+          .setButtonText("Connect Google Calendar")
+          .setCta()
+          .onClick(async () => {
+            await connectGoogleCalendar(this.plugin);
+            this.display();
+          })
+      );
+    }
+
+    new Setting(containerEl)
+      .setName("Auto-sync on grade")
+      .setDesc(
+        "When you grade a note (or add it to the schedule), automatically create/update its " +
+          "Google Calendar event. Has no effect while not connected."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.googleAutoSync).onChange(async (value) => {
+          this.plugin.settings.googleAutoSync = value;
+          await this.plugin.saveSettings();
         })
       );
   }

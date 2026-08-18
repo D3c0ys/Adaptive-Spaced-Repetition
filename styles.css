@@ -96,7 +96,8 @@
   letter-spacing: 0.03em;
 }
 
-.asr-due-embed-refresh {
+.asr-due-embed-refresh,
+.asr-icon-btn {
   padding: 0 6px;
   line-height: 1.4;
 }

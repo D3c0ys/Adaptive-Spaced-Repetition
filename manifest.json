@@ -1,7 +1,7 @@
 {
   "id": "adaptive-spaced-repetition",
   "name": "Adaptive Spaced Repetition",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.0.0",
   "description": "Schedules note reviews using an adaptive forgetting-curve model, learning a per-note forgetting rate from your review history.",
   "author": "",

@@ -60,6 +60,7 @@ review_history:
     outcome: fail
   - date: 2026-08-13
     outcome: pass
+gcal_event_id: abc123def456   # only present once synced to Google Calendar
 ---
 ```
 
@@ -68,9 +69,9 @@ left as-is.
 
 ## Features
 
-Four ways to interact with the schedule, all under the **Adaptive Spaced Repetition** /
-`asr-*` command IDs (open the command palette with `Ctrl/Cmd+P` and search "Adaptive" or the
-command name below):
+Ways to interact with the schedule, all under the **Adaptive Spaced Repetition** / `asr-*`
+command IDs (open the command palette with `Ctrl/Cmd+P` and search "Adaptive" or the command
+name below):
 
 - **Add current note to review schedule** — stamps `created`, `theta`, `next_review` (due
   today), and an empty `review_history` onto the active note.
@@ -103,6 +104,56 @@ The block re-renders automatically whenever Obsidian re-renders the note (reopen
 switching from source to reading view, etc.); use the refresh button to force an update
 without leaving the note — e.g. after the day rolls over, or after grading a note from
 somewhere else in the same session.
+
+## Google Calendar sync
+
+Due notes can be added to Google Calendar two ways:
+
+- **Manual, no setup** — a 📅 button next to every note in the due list (and the "Add note's
+  next review to Google Calendar" command) opens your browser to Google Calendar's pre-filled
+  "add event" page. Nothing is written until you click Save yourself; no credentials involved.
+- **Automatic sync** — once connected (below), grading a note or adding it to the schedule
+  silently creates/updates a real event on your Google Calendar in the background — no manual
+  step. Each note's Google event id is stored in its frontmatter (`gcal_event_id`) so re-syncing
+  updates the same event instead of creating duplicates. A "Sync all tracked notes to Google
+  Calendar" command backfills every already-tracked note on demand.
+
+Automatic sync needs a Google OAuth Client ID, which only you can create (Google ties it to
+your own account — there's no way to provide one generically):
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/), create a project (or
+   pick an existing one).
+2. **APIs & Services → Library** → search **Google Calendar API** → Enable.
+3. **APIs & Services → OAuth consent screen**:
+   - User type: **External**.
+   - Fill in an app name, your email as support contact, and developer contact email.
+   - Under **Test users**, add your own Google account email — required while the app is
+     unverified.
+   - Once configured, set **Publishing status** to **In production** (not Testing). This is a
+     personal, unverified app either way (fine for solo use — Google doesn't require
+     verification under 100 users), but apps left in *Testing* status have refresh tokens that
+     expire after 7 days, forcing you to reconnect constantly. *In production* removes that
+     expiry. You'll still see (and need to click through) an "unverified app" warning the first
+     time you connect — that's expected for an app only you use.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
+   - Application type: **Desktop app**.
+   - Name it anything (e.g. "Obsidian Adaptive Spaced Repetition").
+   - Copy the **Client ID** and **Client Secret** it gives you.
+5. In Obsidian: Settings → Adaptive Spaced Repetition → Google Calendar sync → paste the
+   Client ID and Client Secret → **Connect Google Calendar**. Your browser opens Google's
+   consent screen; approve with the account you added as a test user, then return to Obsidian.
+6. Toggle **Auto-sync on grade** on.
+
+The refresh token is stored, unencrypted, in this vault's
+`.obsidian/plugins/adaptive-spaced-repetition/data.json` — normal for how Obsidian plugins
+persist settings, but worth knowing if you sync your vault somewhere or share it. Disconnect
+any time from the same settings section (revokes nothing on Google's side automatically — also
+revoke access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
+if you want it fully gone).
+
+Google Calendar sync only works in the Obsidian desktop app (the initial OAuth connection
+needs a local network port that isn't available on mobile); the rest of the plugin works
+everywhere.
 
 ## Installation
 

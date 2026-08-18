@@ -1,6 +1,6 @@
 {
   "name": "adaptive-spaced-repetition",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Adaptive forgetting-curve spaced repetition scheduler for Obsidian notes.",
   "main": "main.js",
   "scripts": {
